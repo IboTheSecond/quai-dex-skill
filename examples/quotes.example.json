@@ -1,0 +1,35 @@
+{
+  "_comment": "EXAMPLE numbers only. gasPriceWei and gasValueInOut must be read from the chain and from a price source at runtime. gasValueInOut = output-token base units worth 1e18 wei of the native token.",
+  "tokenIn": "EXA",
+  "tokenOut": "EXB",
+  "amountIn": "10000000000000000000",
+  "slippageBps": 50,
+  "gasPriceWei": "1000000000",
+  "gasValueInOut": "2000000",
+  "quotes": [
+    {
+      "venue": "example-amm-a",
+      "hops": 1,
+      "amountOut": "9500000",
+      "gasUnits": "120000"
+    },
+    {
+      "venue": "example-amm-b",
+      "hops": 2,
+      "amountOut": "9520000",
+      "gasUnits": "260000"
+    },
+    {
+      "venue": "example-amm-c",
+      "hops": 1,
+      "amountOut": "9500000",
+      "gasUnits": "120000"
+    },
+    {
+      "venue": "example-amm-dead",
+      "hops": 1,
+      "amountOut": "0",
+      "gasUnits": "0"
+    }
+  ]
+}

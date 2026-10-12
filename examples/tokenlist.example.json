@@ -1,0 +1,44 @@
+{
+  "name": "EXAMPLE Quai token list (not real tokens)",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "version": {
+    "major": 1,
+    "minor": 0,
+    "patch": 0
+  },
+  "keywords": [
+    "example"
+  ],
+  "tokens": [
+    {
+      "chainId": 9,
+      "address": "0x0011111111111111111111111111111111111111",
+      "symbol": "EXA",
+      "name": "Example Alpha (EXAMPLE address)",
+      "decimals": 18,
+      "logoURI": "https://example.com/logos/exa.png"
+    },
+    {
+      "chainId": 9,
+      "address": "0x0022222222222222222222222222222222222222",
+      "symbol": "EXB",
+      "name": "Example Beta (EXAMPLE address)",
+      "decimals": 6
+    },
+    {
+      "chainId": 9,
+      "address": "0x0033333333333333333333333333333333333333",
+      "symbol": "EXAB",
+      "name": "Example Alpha Beta (EXAMPLE address)",
+      "decimals": 18,
+      "logoURI": "https://example.com/logos/exab.png"
+    },
+    {
+      "chainId": 15000,
+      "address": "0x0044444444444444444444444444444444444444",
+      "symbol": "EXT",
+      "name": "Example Testnet Token (EXAMPLE address)",
+      "decimals": 8
+    }
+  ]
+}
