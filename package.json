@@ -1,0 +1,12 @@
+{
+  "name": "quai-dex-builder",
+  "version": "1.0.0",
+  "description": "Agent skill for building DEX aggregation, mobile token lists and mobile modals on Quai Network.",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/intent.test.mjs test/route.test.mjs test/tokenlist.test.mjs"
+  }
+}
