@@ -37,9 +37,11 @@
 | USD amount | 0.85, token amount is derived from quotes and must be confirmed |
 | Exact-out ("buy 500 HBOME") | 0.72 and stated |
 | Two amounts in one request | 0.45 |
-| Zero amount | 0.30 |
+| Zero amount, percent above 100, negative amount | 0.30 and asks |
+| Negation or cancel word (don't, do not, never, cancel, stop, abort) | action 0.30 and asks whether to cancel or go ahead |
 | Slippage given | 0.95; default 50 bps 0.90 (stated) |
-| Slippage above 10% / above 50% / above 100% | 0.70 / 0.40 (asks) / 0.20 |
+| Slippage above 10% / 50% or more / above 100% | 0.70 / 0.40 (asks) / 0.20 |
+| Bare unitless slippage above 10 ("slippage 50") | 0.40 and asks bps or percent |
 
 Compound sentences ("buy X with 500 and Y with 500") return the first request on top and every request in `intents`. Handle them one at a time and confirm each.
 
@@ -78,6 +80,8 @@ At the start of each session read `.quai-dex/learned.json` and `LEARNINGS.md`. `
 - Keys are lowercase phrases. A learned phrase wins over built-in matching, including fuzzy guesses.
 - Learned phrases score >= 0.90 (token and action 0.95). A saved default slippage scores 0.90 and is stated as "your saved default".
 - `history` keeps the last 100 operations; `aliases` is capped at 500.
+- A token meaning that is a 0x address must be a Cyprus-1 Quai address: `learn` refuses Qi and other-zone addresses, and a hand-edited address gets the same checks as a typed one when parsed.
+- If `learned.json` exists but cannot be parsed (for example cut off by a crash), `parse` warns on stderr, adds an assumption and ignores it for that parse; `learn`, `forget` and `show` refuse and leave the file untouched. Fix or delete the file. Saves are atomic (temp file, then rename).
 - The folder `.quai-dex/` is gitignored by default: it is per-user preference data, not project source.
 
 ## 6. How a correction changes the next parse

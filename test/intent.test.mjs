@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -369,4 +369,116 @@ test('CLI: unknown subcommand exits non-zero with usage on stderr', () => {
   let code = 0;
   try { execFileSync(process.execPath, [SCRIPT, 'wat'], { stdio: 'pipe' }); } catch (e) { code = e.status; }
   assert.equal(code, 2);
+});
+
+// ---- review-fix regression tests ----------------------------------------------------------
+const mkdir = () => mkdtempSync(join(tmpdir(), 'qdex-'));
+const cliRaw = (cwd, ...args) => {
+  const r = spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8' });
+  return { code: r.status, out: r.stdout, err: r.stderr };
+};
+
+test('history accumulates across CLI learn/forget calls and is capped at 100', () => {
+  const dir = mkdir();
+  try {
+    cli(dir, 'learn', 'a', 'HBOME');
+    cli(dir, 'learn', 'b', 'QAXE');
+    cli(dir, 'learn', 'c', 'QI');
+    cli(dir, 'forget', 'c');
+    const h = JSON.parse(readFileSync(join(dir, '.quai-dex', 'learned.json'), 'utf8')).history;
+    assert.equal(h.length, 4);
+    assert.deepEqual(h.map((x) => x.op), ['learn', 'learn', 'learn', 'forget']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  let l = emptyLearned();
+  for (let i = 0; i < 130; i++) l = learnPhrase(l, `p${i}`, 'HBOME');
+  assert.equal(l.history.length, 100);
+  assert.equal(l.history.at(-1).phrase, 'p129');
+});
+
+test('corrupt learned.json: parse warns, learn/forget/show refuse and never overwrite it', () => {
+  const dir = mkdir();
+  try {
+    const cut = '{"version":1,"aliases":{"hbmoe":{"kind":"token","meaning":"HBOME","count":1';
+    mkdirSync(join(dir, '.quai-dex'));
+    const file = join(dir, '.quai-dex', 'learned.json');
+    writeFileSync(file, cut);
+    const pr = cliRaw(dir, 'parse', 'swap 10 quai for hbmoe');
+    assert.equal(pr.code, 0);
+    assert.match(pr.err, /learned\.json/);
+    assert.ok(JSON.parse(pr.out).assumptions.some((a) => /learned\.json/.test(a) && /ignored/i.test(a)));
+    for (const args of [['learn', 'newone', 'QAXE'], ['forget', 'hbmoe'], ['show']]) {
+      const r = cliRaw(dir, ...args);
+      assert.equal(r.code, 2, args.join(' '));
+      assert.match(r.err, /learned\.json/);
+      assert.equal(readFileSync(file, 'utf8'), cut, 'file must be untouched');
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('missing learned.json is fine; save leaves no temp file behind', () => {
+  const dir = mkdir();
+  try {
+    assert.equal(cliRaw(dir, 'parse', 'swap 10 quai for hbome').code, 0);
+    assert.equal(cliRaw(dir, 'learn', 'x', 'HBOME').code, 0);
+    assert.deepEqual(readdirSync(join(dir, '.quai-dex')), ['learned.json']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('learned address meanings get the same Qi / zone checks as typed addresses', () => {
+  assert.throws(() => learnPhrase(emptyLearned(), 'foo2', '0x00ff111111111111111111111111111111111111'), /Qi/);
+  assert.throws(() => learnPhrase(emptyLearned(), 'foo3', '0x0111111111111111111111111111111111111111'), /Cyprus-1/);
+  assert.doesNotThrow(() => learnPhrase(emptyLearned(), 'foo4', EX_ADDR));
+  // hand-edited store: the parse-time check still applies
+  const bad = { version: 1, aliases: { foo2: { kind: 'token', meaning: '0x00ff111111111111111111111111111111111111' } } };
+  const r = p('swap 10 quai for foo2', bad);
+  assert.ok(r.confidence.tokenOut <= 0.3);
+  assert.ok(r.question);
+  const off = { version: 1, aliases: { foo3: { kind: 'token', meaning: '0x0111111111111111111111111111111111111111' } } };
+  const r2 = p('swap 10 quai for foo3', off);
+  assert.ok(r2.confidence.tokenOut <= 0.6);
+  assert.ok(r2.assumptions.some((a) => /Cyprus-1/.test(a)));
+  const good = learnPhrase(emptyLearned(), 'foo4', EX_ADDR);
+  const r3 = p('swap 10 quai for foo4', good);
+  assert.equal(r3.tokenOut, EX_ADDR);
+  assert.equal(r3.confidence.tokenOut, 0.95);
+  assert.equal(r3.question, null);
+});
+
+test('slippage: exactly 50% and bare unitless numbers above 10 ask instead of passing', () => {
+  for (const t of ['swap 10 quai for hbome with slippage 50', 'swap 10 quai for hbome with 50% slippage', 'swap 10 quai for hbome slippage 5000 bps']) {
+    const r = p(t);
+    assert.equal(r.slippageBps, 5000, t);
+    assert.ok(r.confidence.slippage < 0.6, `${t}: ${r.confidence.slippage}`);
+    assert.ok(r.question, t);
+  }
+  const r = p('swap 10 quai for hbome with slippage 15');
+  assert.ok(r.confidence.slippage < 0.6);
+  assert.match(r.question, /bps/);
+  // unchanged behaviour
+  assert.equal(p('swap 10 quai for hbome slippage 0.5').question, null);
+  assert.equal(p('swap 10 quai for hbome slippage 10').question, null);
+  assert.equal(p('swap 10 quai for hbome slippage 15%').question, null);
+  assert.equal(p('swap 10 quai for hbome slippage 49%').confidence.slippage, 0.7);
+});
+
+test('negated or cancelling requests ask instead of parsing as a normal swap', () => {
+  for (const t of ["don't swap 10 quai for hbome", 'never swap 10 quai for hbome', 'cancel the swap of 10 quai for hbome',
+    'do not sell all my qaxe', 'dont swap 10 quai for hbome', 'stop the swap of 10 quai for hbome']) {
+    const r = p(t);
+    assert.ok(r.confidence.overall < 0.6, `${t}: ${r.confidence.overall}`);
+    assert.ok(r.question && /cancel|not|go ahead/i.test(r.question), t);
+  }
+  assert.equal(p('swap 10 quai for hbome').question, null);
+});
+
+test('percent amounts above 100 ask; negative amounts ask', () => {
+  const r = p('sell 150% of my qaxe');
+  assert.ok(r.confidence.amount < 0.6);
+  assert.match(r.question, /100/);
+  assert.equal(p('sell 100% of my qaxe').confidence.amount, 0.92);
+  const n = p('sell -5 qaxe');
+  assert.ok(n.confidence.amount < 0.6);
+  assert.match(n.question, /negative/i);
+  assert.equal(p('swap 10 quai -> hbome').question, null);
+  assert.equal(p('swap 10 quai for hbome slippage 0.5%').question, null);
 });

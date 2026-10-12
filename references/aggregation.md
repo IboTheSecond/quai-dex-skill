@@ -43,7 +43,7 @@ Only split when it pays. `evaluateSplit(quoteA, quoteB, amountIn, steps, extraGa
 
 ## 5. Slippage, minOut, deadline
 - `minOut = floor(amountOut * (10000 - slippageBps) / 10000)`, BigInt only (`minOut()`).
-- Default slippage 50 bps unless the user says otherwise; warn above 1000 bps, refuse above 5000 bps without an explicit second confirmation.
+- Default slippage 50 bps unless the user says otherwise; warn above 1000 bps, ask at 5000 bps (50%) or more and refuse without an explicit second confirmation.
 - Deadline: now + a short window (default 10 min). Use chain time (`woHeader.timestamp`) when you can, not the device clock.
 - For exact-out requests (the user wants N of tokenOut) quote exact-out or iterate exact-in; show the maximum input as the bound.
 

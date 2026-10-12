@@ -7,6 +7,6 @@
   "private": false,
   "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node --test test/intent.test.mjs test/route.test.mjs test/tokenlist.test.mjs"
+    "test": "node --test test/intent.test.mjs test/route.test.mjs test/tokenlist.test.mjs test/docs.test.mjs"
   }
 }

@@ -17,15 +17,17 @@ Open with `dialog.showModal()` (not `show()` and not the `open` attribute: those
 ## 2. Bottom sheet at <= 640px, centred card above
 ```css
 .sheet { border: 0; padding: 0; max-width: 480px; width: calc(100% - 32px); border-radius: 16px;
-         max-height: min(80dvh, 720px); overflow: hidden; display: flex; flex-direction: column; }
+         max-height: min(80dvh, 720px); overflow: hidden; }
+.sheet[open] { display: flex; flex-direction: column; }          /* never on bare .sheet: see note below */
 .sheet::backdrop { background: rgb(0 0 0 / .55); }            /* plain colour, no blur */
 @media (max-width: 640px) {
-  .sheet { position: fixed; inset: auto 0 0 0; margin: 0; width: 100%; max-width: none;
+  .sheet { position: fixed; inset: auto 0 0 0; bottom: var(--kb, 0px); margin: 0; width: 100%; max-width: none;
            border-radius: 16px 16px 0 0; max-height: min(88dvh, calc(100dvh - var(--kb, 0px) - 16px));
            padding-bottom: env(safe-area-inset-bottom); }
 }
 .sheet-body { overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 ```
+- Put `display` only on `.sheet[open]`. Author CSS such as `display: flex` on a bare `.sheet` beats the browser rule `dialog:not([open]) { display: none }`, so a closed sheet would stay visible on the page.
 - Use `dvh`, not `vh`: `100vh` includes the area behind mobile browser bars.
 - `env(safe-area-inset-*)` only works if the page has `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">`.
 - Do not put `backdrop-filter` on anything that moves (the sheet, scrolling lists). It tanks scroll performance on mid-range phones. A flat translucent backdrop is fine.
@@ -72,7 +74,7 @@ function syncKb() {
 }
 vv?.addEventListener('resize', syncKb); vv?.addEventListener('scroll', syncKb);
 ```
-The sheet's `max-height` uses `--kb` (see CSS above), so the search field and the first results stay visible. When an input gets focus, call `input.scrollIntoView({ block: 'nearest' })` after the resize settles. Alternative: `interactive-widget=resizes-content` in the viewport meta where supported. Test with a real keyboard, not only devtools emulation.
+The sheet uses `--kb` twice (see CSS above): `bottom: var(--kb, 0px)` lifts it clear of the keyboard, and `max-height` shrinks it to the space that is left, so the search field and the first results stay visible. Lifting is needed because on iOS Safari the keyboard shrinks the visual viewport but not the layout viewport, so a sheet pinned to `bottom: 0` keeps its bottom edge behind the keyboard (inferred from how the visual viewport works, not measured here: verify on a real iPhone). When an input gets focus, call `input.scrollIntoView({ block: 'nearest' })` after the resize settles. Alternative: `interactive-widget=resizes-content` in the viewport meta where supported. Test with a real keyboard, not only devtools emulation.
 
 ## 6. Touch and motion
 - Every control >= 44x44 CSS px, with at least 8px between targets. Primary action sits at the bottom within thumb reach.

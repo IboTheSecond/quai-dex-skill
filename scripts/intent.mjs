@@ -12,11 +12,12 @@
 
 import { pathToFileURL } from 'node:url';
 import { resolve, join } from 'node:path';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync } from 'node:fs';
 
 export const DEFAULT_SLIPPAGE_BPS = 50;
 export const DEFAULT_DEADLINE_SEC = 600;
 const ASK_BELOW = 0.6;
+const HISTORY_MAX = 100;
 
 const BUILTIN_TOKENS = ['QUAI', 'WQUAI', 'QI', 'WQI', 'HBOME', 'QAXE'];
 const NATIVE = 'QUAI';
@@ -49,6 +50,8 @@ const NUM_WORDS = {
   twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19,
   twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90,
 };
+// Words that negate or cancel a request. A negated request is never acted on as a normal swap.
+const NEGATION = /\b(?:dont|doesnt|didnt|wont|never|nevermind|cancel\w*|stop|abort|not)\b/;
 const NUM = String.raw`(\d+(?:\.\d+)?|\.\d+)`;
 
 // ---- small helpers -------------------------------------------------------------------------
@@ -127,7 +130,26 @@ function sanitizeLearned(l) {
   }
   const bps = l.prefs?.slippageBps;
   if (Number.isInteger(bps) && bps >= 0 && bps <= 10000) out.prefs.slippageBps = bps;
+  if (Array.isArray(l.history)) {
+    out.history = l.history
+      .filter((h) => h && typeof h === 'object' && typeof h.at === 'string' && (h.op === 'learn' || h.op === 'forget') && typeof h.phrase === 'string')
+      .slice(-HISTORY_MAX);
+  }
   return out;
+}
+
+/** Shared Qi / zone check for a lowercase 0x address. Returns { kind, conf, note, ask }. */
+function checkAddress(addr) {
+  if (!/^0x[0-9a-f]{40}$/.test(addr)) {
+    return { kind: 'malformed', conf: 0.3, note: null, ask: `That address looks malformed (${addr.slice(0, 10)}...). What is the full 0x contract address?` };
+  }
+  if (/^0x00[89a-f]/.test(addr)) {
+    return { kind: 'qi', conf: 0.3, note: null, ask: "That address looks like a Qi (UTXO) address, not a Quai token contract. What is the token's Cyprus-1 contract address?" };
+  }
+  if (!addr.startsWith('0x00')) {
+    return { kind: 'zone', conf: 0.6, note: `Address ${addr.slice(0, 6)}... is not in the Cyprus-1 zone (Cyprus-1 addresses start with 0x00); confirm the zone before use.`, ask: null };
+  }
+  return { kind: 'ok', conf: 0.95, note: null, ask: null };
 }
 
 function classifyMeaning(meaning) {
@@ -140,7 +162,13 @@ function classifyMeaning(meaning) {
     return { kind: 'bps', meaning: n };
   }
   if (ACTIONS.has(m.toLowerCase())) return { kind: 'action', meaning: m.toLowerCase() };
-  if (/^0x[0-9a-fA-F]{40}$/.test(m)) return { kind: 'token', meaning: m.toLowerCase() };
+  if (/^0x[0-9a-fA-F]{40}$/.test(m)) {
+    const addr = m.toLowerCase();
+    const { kind } = checkAddress(addr);
+    if (kind === 'qi') throw new Error("That is a Qi (UTXO) address, not a Quai token contract. Learn the token's Cyprus-1 contract address instead.");
+    if (kind === 'zone') throw new Error("That address is not in the Cyprus-1 zone (Cyprus-1 addresses start with 0x00). Learn the token's Cyprus-1 contract address instead.");
+    return { kind: 'token', meaning: addr };
+  }
   if (/^[A-Za-z0-9]{1,12}$/.test(m)) return { kind: 'token', meaning: m.toUpperCase() };
   throw new Error('meaning must be a token symbol, a 0x address, an action (swap|buy|sell|quote|route) or bps:N');
 }
@@ -151,7 +179,7 @@ export function learnPhrase(learned, phrase, meaning, now = new Date()) {
   if (!key) throw new Error('phrase must not be empty');
   const cls = classifyMeaning(meaning);
   const next = sanitizeLearned(learned);
-  next.history = Array.isArray(learned?.history) ? learned.history.slice(-99) : [];
+  next.history = next.history.slice(-(HISTORY_MAX - 1));
   const at = now.toISOString();
   if (key === 'default slippage') {
     if (cls.kind !== 'bps') throw new Error('"default slippage" needs a meaning like bps:100');
@@ -169,7 +197,7 @@ export function learnPhrase(learned, phrase, meaning, now = new Date()) {
 export function forgetPhrase(learned, phrase, now = new Date()) {
   const key = normPhrase(phrase);
   const next = sanitizeLearned(learned);
-  next.history = Array.isArray(learned?.history) ? learned.history.slice(-99) : [];
+  next.history = next.history.slice(-(HISTORY_MAX - 1));
   if (key === 'default slippage') delete next.prefs.slippageBps;
   else delete next.aliases[key];
   next.history.push({ at: now.toISOString(), op: 'forget', phrase: key });
@@ -237,6 +265,12 @@ function extractAmounts(s) {
     return ` zzamt${amts.length - 1} `;
   };
   const lb = String.raw`(?<![a-z0-9.])`;
+  // A minus sign directly before a number (not part of an arrow, a range or a word) makes the amount negative.
+  let negative = false;
+  s = s.replace(/(^|[\s(])-(?=\.?\d)/g, (_m, pre) => {
+    negative = true;
+    return `${pre} zzneg `;
+  });
   s = s.replace(new RegExp(String.raw`\$\s*${NUM}([km])?(?![a-z0-9])`, 'g'), (_m, n, k) => put({ kind: 'usd', value: scale(n, k), conf: 0.85 }));
   s = s.replace(new RegExp(String.raw`${lb}${NUM}([km])?\s*(?:usd|dollars?|bucks|\$)(?![a-z])`, 'g'), (_m, n, k) => put({ kind: 'usd', value: scale(n, k), conf: 0.85 }));
   s = s.replace(new RegExp(String.raw`${lb}${NUM}\s*(?:%|percent|pct)`, 'g'), (_m, n) => put({ kind: 'percent', value: normDec(n), conf: 0.92 }));
@@ -248,7 +282,7 @@ function extractAmounts(s) {
   });
   s = s.replace(/\b(half|quarter)\b/g, (_m, w) => put({ kind: 'percent', value: w === 'half' ? '50' : '25', conf: 0.92 }));
   s = s.replace(/\b(all|everything|entire|whole|max|maximum)\b/g, (_m, w) => put({ kind: 'all', value: null, conf: /^m/.test(w) ? 0.85 : 0.92 }));
-  return { s, amts };
+  return { s, amts, negative };
 }
 
 // ---- clause splitting (two requests in one sentence) -------------------------------------
@@ -316,7 +350,8 @@ function classify(words, ctx) {
     if (hit) {
       const { kind, meaning } = hit.v;
       const phrase = hit.words.join(' ');
-      if (kind === 'token') items.push(tokItem(String(meaning), 0.95, 'learned', phrase, prevSig(), items));
+      if (kind === 'token' && /^0x/i.test(String(meaning))) items.push(addrItem(String(meaning).toLowerCase(), prevSig(), items, 'learned', phrase));
+      else if (kind === 'token') items.push(tokItem(String(meaning), 0.95, 'learned', phrase, prevSig(), items));
       else if (kind === 'action') items.push({ type: 'verb', canon: meaning, conf: 0.95, word: phrase, learned: true });
       else if (kind === 'bps') items.push({ type: 'slip', bps: Number(meaning), word: phrase });
       i += hit.words.length;
@@ -377,21 +412,9 @@ function tokItem(sym, conf, source, word, pv, items) {
   return it;
 }
 
-function addrItem(addr, pv, items) {
-  let conf = 0.95;
-  let note = null;
-  let ask = null;
-  if (!/^0x[0-9a-f]{40}$/.test(addr)) {
-    conf = 0.3;
-    ask = `That address looks malformed (${addr.slice(0, 10)}...). What is the full 0x contract address?`;
-  } else if (/^0x00[89a-f]/.test(addr)) {
-    conf = 0.3;
-    ask = "That address looks like a Qi (UTXO) address, not a Quai token contract. What is the token's Cyprus-1 contract address?";
-  } else if (!addr.startsWith('0x00')) {
-    conf = 0.6;
-    note = `Address ${addr.slice(0, 6)}... is not in the Cyprus-1 zone (Cyprus-1 addresses start with 0x00); confirm the zone before use.`;
-  }
-  const it = tokItem(addr, conf, 'address', addr, pv, items);
+function addrItem(addr, pv, items, source = 'address', word = addr) {
+  const { conf, note, ask } = checkAddress(addr);
+  const it = tokItem(addr, conf, source, word, pv, items);
   it.note = note;
   it.ask = ask;
   return it;
@@ -399,8 +422,8 @@ function addrItem(addr, pv, items) {
 
 // ---- single clause ---------------------------------------------------------------------------
 function parseClause(clause, ctx) {
-  const { s: withAmts, amts } = extractAmounts(clause);
-  const words = withAmts.split(/\s+/).map(cleanWord).filter(Boolean);
+  const { s: withAmts, amts, negative } = extractAmounts(clause);
+  const words = withAmts.split(/\s+/).map(cleanWord).filter((w) => w && w !== 'zzneg');
   const items = classify(words, { lex: ctx.lex, addrs: ctx.addrs, amts });
   const assumptions = [];
 
@@ -570,6 +593,14 @@ function parseClause(clause, ctx) {
       c = 0.3;
       asks.amount = 'The amount is zero. How much do you want to swap?';
     }
+    if (a.kind === 'percent' && Number(a.value) > 100) {
+      c = 0.3;
+      asks.amount = `${a.value}% is more than your whole balance. Do you mean a percent from 1 to 100?`;
+    }
+    if (negative) {
+      c = 0.3;
+      asks.amount = 'Amounts cannot be negative. How much do you want to swap?';
+    }
     if (amtItems.length > 1) {
       c = Math.min(c, 0.45);
       asks.amount = `You gave more than one amount (${amtItems.map((x) => x.amt.value ?? 'all').join(' and ')}). Which one is the amount to spend?`;
@@ -593,10 +624,15 @@ function parseClause(clause, ctx) {
     conf.slippage = 0.9;
   }
   if (slippageBps > 10000) conf.slippage = 0.2;
-  else if (slippageBps > 5000) conf.slippage = 0.4;
+  else if (slippageBps >= 5000) conf.slippage = 0.4;
   else if (slippageBps > 1000) { conf.slippage = Math.min(conf.slippage, 0.7); assumptions.push(`${slippageBps / 100}% slippage is high; sandwich risk goes up with it.`); }
   else if (slippageBps === 0) { conf.slippage = Math.min(conf.slippage, 0.7); assumptions.push('0 bps slippage reverts on any price movement.'); }
-  if (conf.slippage < ASK_BELOW) asks.slippage = `${slippageBps / 100}% slippage is very high. Do you really want ${slippageBps / 100}%, or a lower limit?`;
+  if (explicit?.noUnit && slippageBps > 1000) {
+    // "slippage 50" could be 50 bps or 50%: a 100x misread is too costly to guess.
+    conf.slippage = Math.min(conf.slippage, 0.4);
+    asks.slippage = `Slippage "${slippageBps / 100}" has no unit. Do you mean ${slippageBps / 100} bps (${slippageBps / 10000}%) or ${slippageBps / 100}%?`;
+  }
+  if (conf.slippage < ASK_BELOW && !asks.slippage) asks.slippage = `${slippageBps / 100}% slippage is very high. Do you really want ${slippageBps / 100}%, or a lower limit?`;
 
   // deadline
   let deadlineSec = ctx.deadlineSec;
@@ -607,13 +643,19 @@ function parseClause(clause, ctx) {
     assumptions.push(`A deadline of ${deadlineSec} s is unusual (normal range 30 s to 24 h); confirm it.`);
   }
 
+  if (ctx.negated) {
+    conf.action = Math.min(conf.action, 0.3);
+    assumptions.push(`The request contains "${ctx.negated}", which may mean "do not do this" or "cancel"; nothing should be sent until that is cleared up.`);
+  }
+
   for (const k of Object.keys(conf)) conf[k] = round2(Math.max(0, Math.min(1, conf[k])));
   const overall = Math.min(conf.action, conf.amount, conf.tokenIn, conf.tokenOut, conf.slippage);
 
   // exactly one question when overall < 0.6
   let question = null;
   if (overall < ASK_BELOW) {
-    if (sameToken) question = asks.tokenOut;
+    if (ctx.negated) question = `You wrote "${ctx.negated}". Do you want to cancel or not do this, or go ahead with the ${verb || 'request'}?`;
+    else if (sameToken) question = asks.tokenOut;
     else {
       const order = ['action', 'tokenIn', 'amount', 'tokenOut', 'slippage'];
       let pick = null;
@@ -651,7 +693,7 @@ export function parseIntent(text, opts = {}) {
   const { s: s0, addrs } = prepare(text);
   const sl = extractSlippage(s0);
   const dl = extractDeadline(sl.s);
-  const base = { lex, addrs, learned, slip: sl.slip, deadlineSec: dl.deadlineSec };
+  const base = { lex, addrs, learned, slip: sl.slip, deadlineSec: dl.deadlineSec, negated: NEGATION.exec(s0)?.[0] ?? null };
 
   const clauses = splitClauses(dl.s);
   if (!clauses) return parseClause(dl.s, base);
@@ -674,17 +716,44 @@ export function parseIntent(text, opts = {}) {
 const LEARNED_DIR = '.quai-dex';
 const learnedPath = (cwd) => join(cwd, LEARNED_DIR, 'learned.json');
 
+/**
+ * Reads the learned store. A missing file is an empty store. A file that exists but cannot be read
+ * or parsed (truncated, corrupt) throws an Error with code LEARNED_CORRUPT instead of being treated
+ * as empty, so a later save can never wipe earlier learnings.
+ */
 export function loadLearned(cwd = process.cwd()) {
+  let raw;
   try {
-    return sanitizeLearned(JSON.parse(readFileSync(learnedPath(cwd), 'utf8')));
-  } catch {
-    return emptyLearned();
+    raw = readFileSync(learnedPath(cwd), 'utf8');
+  } catch (e) {
+    if (e?.code === 'ENOENT') return emptyLearned();
+    throw corruptError(e);
+  }
+  try {
+    return sanitizeLearned(JSON.parse(raw));
+  } catch (e) {
+    throw corruptError(e);
   }
 }
 
+function corruptError(cause) {
+  const err = new Error(`${LEARNED_DIR}/learned.json cannot be read (${cause?.message || cause}). Fix or delete the file; it was not changed.`);
+  err.code = 'LEARNED_CORRUPT';
+  return err;
+}
+
+/** Atomic save: write a temp file next to the target, then rename over it. */
 export function saveLearned(learned, cwd = process.cwd()) {
   mkdirSync(join(cwd, LEARNED_DIR), { recursive: true });
-  writeFileSync(learnedPath(cwd), JSON.stringify(learned, null, 2) + '\n');
+  const target = learnedPath(cwd);
+  const tmp = `${target}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(learned, null, 2) + '\n');
+    renameSync(tmp, target);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* nothing to clean */ }
+    throw e;
+  }
 }
 
 function usage() {
@@ -705,7 +774,20 @@ function main(argv) {
     const noLearned = rest.includes('--no-learned');
     const text = rest.filter((a) => a !== '--no-learned').join(' ');
     if (!text.trim()) return usage();
-    console.log(JSON.stringify(parseIntent(text, { learned: noLearned ? emptyLearned() : loadLearned(cwd) }), null, 2));
+    let learned = emptyLearned();
+    let warning = null;
+    if (!noLearned) {
+      try {
+        learned = loadLearned(cwd);
+      } catch (e) {
+        if (e.code !== 'LEARNED_CORRUPT') throw e;
+        warning = `${e.message} Learned phrases were ignored for this parse.`;
+        console.error(`warning: ${warning}`);
+      }
+    }
+    const result = parseIntent(text, { learned });
+    if (warning) result.assumptions.push(warning);
+    console.log(JSON.stringify(result, null, 2));
     return 0;
   }
   if (cmd === 'learn') {
@@ -724,14 +806,25 @@ function main(argv) {
   if (cmd === 'forget') {
     if (rest.length < 1) return usage();
     const phrase = rest.join(' ');
-    const before = loadLearned(cwd);
+    let before;
+    try {
+      before = loadLearned(cwd);
+    } catch (e) {
+      console.error(e.message);
+      return 2;
+    }
     const existed = normPhrase(phrase) in before.aliases || (normPhrase(phrase) === 'default slippage' && before.prefs.slippageBps !== undefined);
     saveLearned(forgetPhrase(before, phrase), cwd);
     console.log(JSON.stringify({ ok: true, phrase: normPhrase(phrase), existed }));
     return 0;
   }
   if (cmd === 'show') {
-    console.log(JSON.stringify(existsSync(learnedPath(cwd)) ? loadLearned(cwd) : emptyLearned(), null, 2));
+    try {
+      console.log(JSON.stringify(existsSync(learnedPath(cwd)) ? loadLearned(cwd) : emptyLearned(), null, 2));
+    } catch (e) {
+      console.error(e.message);
+      return 2;
+    }
     return 0;
   }
   return usage();
